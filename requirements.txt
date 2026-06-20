@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+ir_datasets
+sentence-transformers
+nltk
+textblob
+google-genai
+python-dotenv
+groq
