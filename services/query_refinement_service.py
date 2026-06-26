@@ -1,125 +1,144 @@
-from textblob import TextBlob
+import re
 from typing import List, Set, Optional, Dict, Any
-from sentence_transformers import SentenceTransformer
-from numpy.linalg import norm
+from functools import lru_cache
 import numpy as np
+from numpy.linalg import norm
+from textblob import TextBlob
+from sentence_transformers import SentenceTransformer
 
-
+import nltk
+from nltk.corpus import wordnet
 from services.preprocessing_service import preprocess
 
-class QueryRefinementService:
-   
-   
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet', quiet=True)
 
-    def __init__(self, dataset_vocabulary: Optional[Set[str]] = None):
+
+@lru_cache(maxsize=2000)
+def _cached_spell_correct(word: str) -> str:
+    return str(TextBlob(word).correct())
+
+
+class QueryRefinementService:
+    def __init__(
+        self,
+        dataset_vocabulary: Optional[Set[str]] = None,
+        enable_spellcheck: bool = True,
+        enable_synonyms: bool = True,
+        max_synonyms_per_query: int = 4,
+        max_synonyms_per_word: int = 1
+    ):
         self.dataset_vocabulary = dataset_vocabulary
+        self.enable_spellcheck = enable_spellcheck
+        self.enable_synonyms = enable_synonyms
+        self.max_synonyms_per_query = max_synonyms_per_query
+        self.max_synonyms_per_word = max_synonyms_per_word
+        
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         self.vocab_embeddings_cache: Dict[str, Any] = {}
 
-    def _get_or_compute_embedding(self, word: str) -> Any:
-        lower_word = word.lower()
-        if lower_word not in self.vocab_embeddings_cache:
-            self.vocab_embeddings_cache[lower_word] = self.embedding_model.encode([lower_word])[0]
-        return self.vocab_embeddings_cache[lower_word]
+    def _get_embedding(self, text: str) -> Any:
+        if text not in self.vocab_embeddings_cache:
+            self.vocab_embeddings_cache[text] = self.embedding_model.encode(text)
+        return self.vocab_embeddings_cache[text]
 
     def correct_spelling(self, query: str) -> str:
-       
-       
+        if not self.enable_spellcheck:
+            return query
+
         words = query.split()
         corrected_words = []
 
         for word in words:
-
-            if not word.isalpha() or word.isupper() or len(word) < 4:
-                corrected_words.append(word)
-                continue
-
-
-            processed_tokens = preprocess(word)
+            clean_word = re.sub(r"[^a-zA-Z0-9-]", "", word).lower()
             
-            is_valid_medical_term = False
-            if self.dataset_vocabulary is not None and processed_tokens:
-
-                if processed_tokens[0] in self.dataset_vocabulary:
-                    is_valid_medical_term = True
-
-            if is_valid_medical_term:
+            if word.isupper() or len(clean_word) <= 3:
+                corrected_words.append(word)
+                continue
+                
+            stemmed_word_list = preprocess(clean_word)
+            if self.dataset_vocabulary and stemmed_word_list and stemmed_word_list[0] in self.dataset_vocabulary:
                 corrected_words.append(word)
                 continue
 
+            corrected_word = _cached_spell_correct(word)
+            clean_corrected = re.sub(r"[^a-zA-Z0-9-]", "", corrected_word).lower()
 
-            blob = TextBlob(word)
-            corrected_word = str(blob.correct())
+            stemmed_corrected_list = preprocess(clean_corrected)
+            if self.dataset_vocabulary and stemmed_corrected_list and stemmed_corrected_list[0] not in self.dataset_vocabulary:
+                corrected_words.append(word)
+                continue
+
+            if word.lower() != corrected_word.lower():
+                print(f"[Spell Check Match] تم تصحيح خطأ بشري حقيقي: '{word}' -> '{corrected_word}'")
+            
             corrected_words.append(corrected_word)
 
-        corrected_query = " ".join(corrected_words)
-        
-        if query != corrected_query:
-            print(f"[Query Refinement] تم تصحيح الاستعلام من: '{query}' إلى: '{corrected_query}'")
-            
-        return corrected_query
+        return " ".join(corrected_words)
 
-    def expand_query_with_synonyms(self, query: str, max_synonyms_per_word: int = 1) -> str:
-        if not self.dataset_vocabulary:
-            return query 
-            
+    def expand_query_with_synonyms(self, query: str) -> str:
         words = query.split()
-        original_query = query 
-        new_synonyms: List[str] = [] 
+        expanded = list(words) 
 
         for word in words:
-            lower_word = word.lower()
-            
-            if not lower_word.isalpha():
+            if self._should_skip_word(word):
                 continue
 
-            word_emb = self._get_or_compute_embedding(lower_word)
-            word_norm = norm(word_emb)
-            
-            if word_norm == 0:
-                 continue
-
-            from nltk.corpus import wordnet
-            synonyms = []
-            for syn in wordnet.synsets(lower_word):
+            synonyms_added = 0
+            for syn in wordnet.synsets(word):
                 for lemma in syn.lemmas():
-                    synonym = lemma.name().replace('_', ' ').lower()
-                    if synonym != lower_word and synonym.isalpha():
-                        synonyms.append(synonym)
-            
-            medical_context_emb = self._get_or_compute_embedding("medical disease virus")
-            med_norm = norm(medical_context_emb)
-            
-            valid_synonyms = []
-            for syn in set(synonyms):
+                    candidate = lemma.name().replace("_", " ").lower()
 
-                 syn_processed = preprocess(syn)
-                 if syn_processed and syn_processed[0] in self.dataset_vocabulary:
-                     syn_emb = self._get_or_compute_embedding(syn)
-                     syn_norm = norm(syn_emb)
-                     if syn_norm > 0:
-                         medical_similarity = np.dot(syn_emb, medical_context_emb) / (syn_norm * med_norm)
-                         word_similarity = np.dot(syn_emb, word_emb) / (syn_norm * word_norm)
-                         
-                         if medical_similarity > 0.15 and word_similarity > 0.4:
-                             valid_synonyms.append((syn, word_similarity))
-            
-            valid_synonyms.sort(key=lambda x: x[1], reverse=True)
-            for syn, _ in valid_synonyms[:max_synonyms_per_word]:
-                 if syn not in words and syn not in new_synonyms:
-                     new_synonyms.append(syn)
+                    if candidate == word.lower():
+                        continue
 
-        if new_synonyms:
-            expanded_query = original_query + " " + " ".join(new_synonyms)
-            print(f"[Query Refinement] تم التوسيع (بإضافة المرادفات في النهاية): '{expanded_query}'")
-            return expanded_query
+                    if self._is_valid_synonym(word, candidate):
+                        expanded.append(candidate)
+                        synonyms_added += 1
+
+                    if synonyms_added >= self.max_synonyms_per_word:
+                        break
+                if synonyms_added >= self.max_synonyms_per_word:
+                    break
+
+        expanded = expanded[:len(words) + self.max_synonyms_per_query]
+        expanded_query = " ".join(expanded)
+        return expanded_query
+
+    def _should_skip_word(self, word: str) -> bool:
+        return bool(re.match(r"^\d+$", word)) or len(word) <= 2
+
+    def _is_valid_synonym(self, word: str, synonym: str) -> bool:
+        if len(synonym.split()) > 2:
+            return False
             
-        return query
+        if self.dataset_vocabulary:
+            syn_processed = preprocess(synonym)
+            if not syn_processed or syn_processed[0] not in self.dataset_vocabulary:
+                return False
+
+        try:
+            word_emb = self._get_embedding(word.lower())
+            syn_emb = self._get_embedding(synonym.lower())
+            
+            w_norm = norm(word_emb)
+            s_norm = norm(syn_emb)
+            
+            if w_norm == 0 or s_norm == 0:
+                return False
+                
+            similarity = np.dot(word_emb, syn_emb) / (w_norm * s_norm)
+            
+            return bool(similarity > 0.5)
+        except Exception:
+            return False
 
     def refine_query(self, query: str, use_spell_check: bool = True, use_synonyms: bool = True) -> str:
-        refined_query = query
-        if use_spell_check:
-            refined_query = self.correct_spelling(refined_query)
-        if use_synonyms:
-            refined_query = self.expand_query_with_synonyms(refined_query)
-        return refined_query
+        refined = query
+        if use_spell_check and self.enable_spellcheck:
+            refined = self.correct_spelling(refined)
+        if use_synonyms and self.enable_synonyms:
+            refined = self.expand_query_with_synonyms(refined)
+        return refined

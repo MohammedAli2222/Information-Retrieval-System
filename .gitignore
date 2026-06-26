@@ -3,3 +3,4 @@
 __pycache__/
 *.pkl
 cache/
+# ir_system.db

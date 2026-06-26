@@ -3,6 +3,7 @@ from typing import Set, Dict, Any, List, Tuple
 from functools import lru_cache  
 from services.dataset_service import load_dataset, print_dataset_info
 from services.preprocessing_service import preprocess_dataset, preprocess
+from services.database_service import DatabaseService
 from services.indexing_service import IndexingService
 from services.retrieval_service import RetrievalService
 from services.query_refinement_service import QueryRefinementService 
@@ -36,16 +37,20 @@ def main() -> None:
     dataset = load_dataset()
     print_dataset_info(dataset)
 
-    print("\n=== خطوة 2: بناء الفهرسة والتمثيل المعماري ===")
-    indexing_service = IndexingService()
+    print("\n=== خطوة 2: تهيئة قاعدة البيانات وبناء الفهرسة المعمارية ===")
+
+    db_service = DatabaseService()
     
-    cache_name_index: str = "cord19_index.pkl"
+
+    indexing_service = IndexingService(db_service=db_service)
+    
+
     inverted_index, doc_lengths = indexing_service.build_inverted_index(
         dataset=dataset,
-        preprocess_fn=preprocess,
-        cache_name=cache_name_index
+        preprocess_fn=preprocess
     )
     
+
     cache_name_embeddings: str = "cord19_embeddings.pkl"
     doc_embeddings = indexing_service.compute_documents_embeddings(
         dataset=dataset,
@@ -67,10 +72,8 @@ def main() -> None:
     raw_query: str = "coronvirus vaccin" 
     print(f"\n[المستخدم أدخل] الاستعلام الخام: '{raw_query}'")
 
-
     search_data = execute_cached_search(raw_query)
     
-
     print("\n[المستخدم الثاني يبحث عن نفس الكلمة...]")
     search_data_fast = execute_cached_search(raw_query)
     print("[⚡ Cache Hit] تم جلب النتائج من الذاكرة العشوائية (RAM) في 0.0001 ثانية، بدون إعادة الحسابات!")

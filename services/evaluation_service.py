@@ -1,21 +1,18 @@
 import math
-from typing import Dict, List
+from typing import Dict, List, Set
 
 class EvaluationService:
 
     def __init__(self) -> None:
         pass
 
-
     def precision_at_k(self, retrieved: List[str], qrels: Dict[str, int], k: int = 10) -> float:
         retrieved_k = retrieved[:k]
         if not retrieved_k:
             return 0.0
             
-
         relevant_retrieved = sum(1 for doc_id in retrieved_k if qrels.get(doc_id, 0) > 0)
         return relevant_retrieved / k
-
 
     def recall(self, retrieved: List[str], qrels: Dict[str, int]) -> float:
         total_relevant = sum(1 for rel in qrels.values() if rel > 0)
@@ -24,7 +21,6 @@ class EvaluationService:
             
         relevant_retrieved = sum(1 for doc_id in retrieved if qrels.get(doc_id, 0) > 0)
         return relevant_retrieved / total_relevant
-
 
     def average_precision(self, retrieved: List[str], qrels: Dict[str, int]) -> float:
         total_relevant = sum(1 for rel in qrels.values() if rel > 0)
@@ -42,17 +38,14 @@ class EvaluationService:
                 
         return ap / total_relevant
 
-
     def ndcg_at_k(self, retrieved: List[str], qrels: Dict[str, int], k: int = 10) -> float:
         retrieved_k = retrieved[:k]
         dcg: float = 0.0
         
         for i, doc_id in enumerate(retrieved_k):
             rel = qrels.get(doc_id, 0)
-
             dcg += (2**rel - 1) / math.log2(i + 2)
             
-
         ideal_rels = sorted(qrels.values(), reverse=True)[:k]
         idcg: float = 0.0
         
@@ -64,6 +57,32 @@ class EvaluationService:
             
         return dcg / idcg
 
+    def per_query_relevant_retrieval_report(self, system_results: Dict[str, List[str]], qrels: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, float]]:
+
+        report: Dict[str, Dict[str, float]] = {}
+
+        for qid, retrieved_docs in system_results.items():
+
+            relevant_docs: Set[str] = {
+                doc_id for doc_id, rel in qrels.get(qid, {}).items() if rel > 0
+            }
+
+            if not relevant_docs:
+                continue
+
+            retrieved_set: Set[str] = set(retrieved_docs)
+            
+
+            hit_count: int = len(retrieved_set & relevant_docs)
+            total_relevant: int = len(relevant_docs)
+
+            report[qid] = {
+                "hit": float(hit_count),
+                "total_relevant": float(total_relevant),
+                "recall": float(hit_count) / total_relevant if total_relevant > 0 else 0.0
+            }
+
+        return report
 
     def evaluate_system(self, system_results: Dict[str, List[str]], all_qrels: Dict[str, Dict[str, int]], k: int = 10) -> Dict[str, float]:
         sum_ap: float = 0.0
